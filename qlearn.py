@@ -7,7 +7,7 @@ np.set_printoptions(precision=3)
 
 from Levenshtein import distance
 
-WORLD = "red dress pants"
+WORLD = "More recently, there has been a revival of interest in combining"
 
 # Randomize start
 #START = []
@@ -21,8 +21,10 @@ START = ''.join(sorted(list(WORLD)))
 
 GAMMA = .8
 EPSILON = .8
-ITERS = 1000000
-MAX_HISTORY = 100
+MIN_EPSILON = .1
+DECAY = 10
+ITERS = 10000000
+MAX_HISTORY = 1000
 
 class Transition(object):
 
@@ -142,13 +144,12 @@ class SCUtility(UtilityF):
 
         return reward - 0.1
 
-
 class AnagramTransition(Transition):
     MOVEMENTS = ('left', 'right', 'submit')
     POP = 'pop',
     PUSH = 'push',
     EMPTY = MOVEMENTS + PUSH
-    FULL  = MOVEMENTS + POP
+    NOT_EMPTY = MOVEMENTS + PUSH + POP
 
     def is_terminal(self, state):
         return isinstance(state, SubmitS)
@@ -173,26 +174,42 @@ class AnagramTransition(Transition):
                 return EmptyS(min(len(state.w) - 1, state.cp + 1), state.w)
             else:
                 # Push
+                if not state.w:
+                    # Noop
+                    return state
+
                 nw = state.w[:state.cp] + state.w[state.cp+1:]
                 ncp = min(len(nw) - 1, state.cp)
-                return FullS(ncp, nw, state.w[state.cp])
+                return NotEmptyS(ncp, nw, (None, state.w[state.cp]))
 
-        elif isinstance(state, FullS):
+        elif isinstance(state, NotEmptyS):
             if action == 'left':
-                return FullS(max(0, state.cp - 1), state.w, state.c)
+                return NotEmptyS(max(0, state.cp - 1), state.w, state.c)
             elif action == 'right':
-                return FullS(min(len(state.w), state.cp + 1), state.w, state.c)
+                return NotEmptyS(min(len(state.w) - 1, state.cp + 1), state.w, state.c)
+            elif action == 'push':
+                if not state.w:
+                    return state
+
+                nw = state.w[:state.cp] + state.w[state.cp+1:]
+                ncp = min(len(nw) - 1, state.cp)
+                return NotEmptyS(ncp, nw, (state.c, state.w[state.cp]))
+ 
             else:
                 # Pop
-                nw = state.w[:state.cp] + state.c + state.w[state.cp:]
-                return EmptyS(state.cp, nw)
+                stack, cur_c = state.c
+                nw = state.w[:state.cp] + cur_c + state.w[state.cp:]
+                if stack is None:
+                    return EmptyS(state.cp, nw)
+
+                return NotEmptyS(state.cp, nw, stack)
 
 class EmptyS(namedtuple('EmptyS', 'cp,w')):
     ACTIONS = AnagramTransition.EMPTY
     A_IDX = {a: i for i, a in enumerate(ACTIONS)}
 
-class FullS(namedtuple('FullS', 'cp,w,c')):
-    ACTIONS = AnagramTransition.FULL
+class NotEmptyS(namedtuple('NotEmptyS', 'cp,w,c')):
+    ACTIONS = AnagramTransition.NOT_EMPTY
     A_IDX = {a: i for i, a in enumerate(ACTIONS)}
 
 class SubmitS(namedtuple('SubmitS', 'w')):
@@ -231,10 +248,11 @@ def main():
     #uf = SCUtility(tf)
     qp = QPolicy(Q, tf)
     spos = 0 #random.randint(0, len(START)-1)
+    best = float('-inf')
     for i in xrange(ITERS):
         state = EmptyS(spos, START)
         #state = (0, START)
-        cur_eps = max(0.05, EPSILON - i*50 / (float(ITERS)))
+        cur_eps = max(MIN_EPSILON, EPSILON - i*DECAY / (float(ITERS)))
         #cur_eps = EPSILON
         if i and i % 1000 == 0:
             print 'Iteration', i
@@ -242,27 +260,33 @@ def main():
             print "States:", len(Q)
             print "State 0:", Q[state]
 
-            if i % 10000 == 0:
-                print "Best policy:"
-                rem = 0
-                cum_rew = 0
-                _state = state
-                while not tf.is_terminal(_state):
-                    if rem < MAX_HISTORY:
-                        action, score = qp.best_action(_state, score=True)
-                    else:
-                        action, score = 'submit', -100
+            rem = 0
+            cum_rew = 0
+            _state = state
+            h = []
+            while not tf.is_terminal(_state):
+                if rem < MAX_HISTORY:
+                    action, score = qp.best_action(_state, score=True)
+                else:
+                    action, score = 'submit', -100
 
-                    cum_rew += uf.evaluate(_state, action)
+                cum_rew += uf.evaluate(_state, action)
 
-                    print rem, _state, action, score, cum_rew
-                    _state = tf.evaluate(_state, action)
-                    rem += 1
+                h.append((rem, _state, action, score, cum_rew))
+                _state = tf.evaluate(_state, action)
+                rem += 1
 
-                print "Best reward:", cum_rew
-                #if _state[1] == WORLD:
-                if _state.w == WORLD:
-                    raw_input()
+            print "Current Reward:", cum_rew
+            print "Current History:", len(h)
+
+            #if _state[1] == WORLD:
+            if _state.w == WORLD and cum_rew > best:
+                for a,b,c,d,e in h:
+                    print a, b, c, d, e
+
+                raw_input()
+
+            best = max(best, cum_rew)
 
         history = []
         action = None
