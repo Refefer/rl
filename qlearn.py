@@ -3,10 +3,11 @@ import random
 import string
 
 import numpy as np
+np.set_printoptions(precision=3)
 
 from Levenshtein import distance
 
-WORLD = "namedtuple"
+WORLD = "red dress pants"
 
 # Randomize start
 #START = []
@@ -18,10 +19,10 @@ WORLD = "namedtuple"
 # Anagram
 START = ''.join(sorted(list(WORLD)))
 
-GAMMA = 1.0
+GAMMA = .8
 EPSILON = .8
 ITERS = 1000000
-MAX_HISTORY = 500
+MAX_HISTORY = 100
 
 class Transition(object):
 
@@ -83,9 +84,7 @@ class SpellingTransition(Transition):
     INSERTS = tuple(list(string.ascii_lowercase) + [' '])
     MOVEMENTS = tuple(['left', 'right', 'delete', 'submit'])
     ACTIONS = INSERTS + MOVEMENTS
-    I_INDEX = {a: i for i, a in enumerate(INSERTS)}
-    M_INDEX = {a: i for i, a in enumerate(MOVEMENTS)}
-    A_INDEX = {a: i for i, a in enumerate(INSERTS + MOVEMENTS)}
+    A_INDEX = {a: i for i, a in enumerate(ACTIONS)}
 
     def is_terminal(self, state):
         return state[0] == 'submit'
@@ -130,22 +129,19 @@ class SCUtility(UtilityF):
             pd = distance(prev_world, WORLD)
             nd = distance(world, WORLD)
             if pd < nd:
-                reward = -1
+                reward = -2
             elif nd < pd:
                 reward = 1
 
         elif action == 'submit':
             nd = distance(world, WORLD)
             if nd == 0:
-                reward = 2
+                return 10
             else:
                 reward = -(nd ** 2)
 
         return reward - 0.1
 
-EmptyS = namedtuple('EmptyS', 'cp,w')
-FullS = namedtuple('FullS', 'cp,w,c')
-SubmitS = namedtuple('SubmitS', 'w')
 
 class AnagramTransition(Transition):
     MOVEMENTS = ('left', 'right', 'submit')
@@ -156,27 +152,15 @@ class AnagramTransition(Transition):
 
     def is_terminal(self, state):
         return isinstance(state, SubmitS)
-        return state[0] == 'submit'
 
     def action_set(self, state):
-        if isinstance(state, EmptyS):
-            return self.EMPTY
-
-        return self.FULL
+        return state.ACTIONS
 
     def index_to_action(self, state, index):
-        if isinstance(state, EmptyS):
-            return self.EMPTY[index]
-
-        return self.FULL[index]
+        return state.ACTIONS[index]
 
     def action_to_index(self, state, action):
-        if isinstance(state, EmptyS):
-            return self.EMPTY.index(action)
-        elif isinstance(state, FullS):
-            return self.FULL.index(action)
-
-        return 0
+        return state.A_IDX[action]
 
     def evaluate(self, state, action):
         if action == 'submit':
@@ -203,6 +187,18 @@ class AnagramTransition(Transition):
                 nw = state.w[:state.cp] + state.c + state.w[state.cp:]
                 return EmptyS(state.cp, nw)
 
+class EmptyS(namedtuple('EmptyS', 'cp,w')):
+    ACTIONS = AnagramTransition.EMPTY
+    A_IDX = {a: i for i, a in enumerate(ACTIONS)}
+
+class FullS(namedtuple('FullS', 'cp,w,c')):
+    ACTIONS = AnagramTransition.FULL
+    A_IDX = {a: i for i, a in enumerate(ACTIONS)}
+
+class SubmitS(namedtuple('SubmitS', 'w')):
+    ACTIONS = 'submit',
+    A_IDX = {'submit': 0} 
+
 class AnagramUtility(UtilityF):
 
     def _reward(self, old_state, action, new_state):
@@ -212,7 +208,7 @@ class AnagramUtility(UtilityF):
         if action == 'submit':
             nd = distance(world, WORLD)
             if nd == 0:
-                reward = 2
+                reward = 10
             else:
                 reward = -(nd ** 2)
 
@@ -229,14 +225,16 @@ class AnagramUtility(UtilityF):
 
 def main():
     Q = {}
-    tf = SpellingTransition()
-    uf = SCUtility(tf)
+    tf = AnagramTransition()
+    uf = AnagramUtility(tf)
+    #tf = SpellingTransition()
+    #uf = SCUtility(tf)
     qp = QPolicy(Q, tf)
     spos = 0 #random.randint(0, len(START)-1)
     for i in xrange(ITERS):
-        #state = EmptyS(spos, START)
-        state = (0, START)
-        cur_eps = max(0.05, EPSILON - i / (10*float(ITERS)))
+        state = EmptyS(spos, START)
+        #state = (0, START)
+        cur_eps = max(0.05, EPSILON - i*50 / (float(ITERS)))
         #cur_eps = EPSILON
         if i and i % 1000 == 0:
             print 'Iteration', i
@@ -244,41 +242,45 @@ def main():
             print "States:", len(Q)
             print "State 0:", Q[state]
 
-            if i % 1000 == 0:
+            if i % 10000 == 0:
                 print "Best policy:"
                 rem = 0
                 cum_rew = 0
-                while not tf.is_terminal(state):
+                _state = state
+                while not tf.is_terminal(_state):
                     if rem < MAX_HISTORY:
-                        action, score = qp.best_action(state, score=True)
+                        action, score = qp.best_action(_state, score=True)
                     else:
-                        action, score = 'submit', float('-inf')
+                        action, score = 'submit', -100
 
-                    print rem, state, action, score
-                    cum_rew = uf.evaluate(state, action)
-                    state = tf.evaluate(state, action)
+                    cum_rew += uf.evaluate(_state, action)
+
+                    print rem, _state, action, score, cum_rew
+                    _state = tf.evaluate(_state, action)
                     rem += 1
 
-                print state, action
                 print "Best reward:", cum_rew
+                #if _state[1] == WORLD:
+                if _state.w == WORLD:
+                    raw_input()
 
         history = []
         action = None
         # Until finished
         while not tf.is_terminal(state):
-            _cur_eps = cur_eps + (len(history) / (float(MAX_HISTORY) * 2)) ** 2
+            #_cur_eps = cur_eps + (len(history) / (float(MAX_HISTORY) * 2)) ** 2
             # Get the next state
             if len(history) == MAX_HISTORY:
                 action = 'submit'
 
-            elif random.random() < _cur_eps:
+            elif random.random() < cur_eps:
                 # Explore!
                 action = tf.random_action(state)
             else:
                 action = qp.best_action(state)
 
-            if i %1000 == 0:
-                print state, action
+            #if i % 1000 == 0:
+            #    print "Cur State:", state, action
 
             # Change the world
             new_state = tf.evaluate(state, action)
@@ -288,16 +290,19 @@ def main():
             history.append((state, action, reward))
             state = new_state
 
-        history.append((state, action, reward))
+        #history.append((state, action, reward))
 
         # Alright, run through the background
         history = list(reversed(history))
-        if i % 1000 == 0:
-            print "next"
+        #if i % 1000 == 0:
+        #    print "next"
+        #    print "History:", len(history)
+
+        #if i % 1000 == 0:
+        #    print
+        #    print
 
         for si, (state, action, reward) in enumerate(history):
-            if si == 0:
-                Q[state] = np.array([reward])
 
             if state not in Q:
                 N = len(tf.action_set(state))
@@ -308,11 +313,9 @@ def main():
             else:
                 v = reward + GAMMA * Q[history[si-1][0]].max()
 
-            if i % 1000 == 0:
-                print state, action, v
-
             a_idx = tf.action_to_index(state, action)
             Q[state][a_idx] = v
+
 
 if __name__ == '__main__':
     main()
