@@ -1,3 +1,4 @@
+import pprint
 from collections import namedtuple
 import random
 import string
@@ -7,7 +8,9 @@ np.set_printoptions(precision=3)
 
 from Levenshtein import distance
 
-WORLD = "More recently, there has been a revival of interest in combining"
+from dqn import SpellingDQN
+
+WORLD = "randomize start"
 
 # Randomize start
 #START = []
@@ -19,12 +22,12 @@ WORLD = "More recently, there has been a revival of interest in combining"
 # Anagram
 START = ''.join(sorted(list(WORLD)))
 
-GAMMA = .8
-EPSILON = .8
-MIN_EPSILON = .1
-DECAY = 10
+GAMMA = .9
+EPSILON = .5
+MIN_EPSILON = .03
+DECAY = 50
 ITERS = 10000000
-MAX_HISTORY = 1000
+MAX_HISTORY = 100
 
 class Transition(object):
 
@@ -82,11 +85,28 @@ class QPolicy(object):
 
         return action
 
+class DQPolicy(object):
+    def __init__(self, dqn, tf):
+        self.dqn = dqn
+        self.tf = tf
+
+    def best_action(self, state, score=False):
+        action_state = self.dqn.predict(state)
+        r_idx = np.argmax(action_state)
+        action = self.tf.index_to_action(state, r_idx)
+        if score:
+            return action, action_state[r_idx]
+
+        return action
+
 class SpellingTransition(Transition):
     INSERTS = tuple(list(string.ascii_lowercase) + [' '])
     MOVEMENTS = tuple(['left', 'right', 'delete', 'submit'])
     ACTIONS = INSERTS + MOVEMENTS
     A_INDEX = {a: i for i, a in enumerate(ACTIONS)}
+
+    def __init__(self, max_len=64):
+        self.max_len = max_len
 
     def is_terminal(self, state):
         return state[0] == 'submit'
@@ -111,11 +131,13 @@ class SpellingTransition(Transition):
         elif action == 'right':
             cur_pos += 1
         elif action == 'delete':
-            world = world[:cur_pos] + world[cur_pos + 1:]
+            if  len(world) > 1:
+                world = world[:cur_pos] + world[cur_pos + 1:]
         elif action != 'submit':
-            world = world[:cur_pos] + action + world[cur_pos:]
+            if len(world) < self.max_len:
+                world = world[:cur_pos] + action + world[cur_pos:]
 
-        cur_pos = max(0, min(cur_pos, len(world)))
+        cur_pos = max(0, min(cur_pos, len(world) - 1))
         if action == 'submit':
             return ('submit', world)
 
@@ -131,7 +153,7 @@ class SCUtility(UtilityF):
             pd = distance(prev_world, WORLD)
             nd = distance(world, WORLD)
             if pd < nd:
-                reward = -2
+                reward = -1
             elif nd < pd:
                 reward = 1
 
@@ -237,28 +259,29 @@ class AnagramUtility(UtilityF):
             elif nd < pd:
                 reward = 1
 
-        reward -= 0.1
-        return reward
+        return reward - 0.1
 
 def main():
-    Q = {}
-    tf = AnagramTransition()
-    uf = AnagramUtility(tf)
-    #tf = SpellingTransition()
-    #uf = SCUtility(tf)
-    qp = QPolicy(Q, tf)
+    #tf = AnagramTransition()
+    #uf = AnagramUtility(tf)
+    tf = SpellingTransition()
+    uf = SCUtility(tf)
+    #Q = {}
+    #qp = QPolicy(Q, tf)
+    Q = SpellingDQN(len(tf.ACTIONS), GAMMA)
+    qp = DQPolicy(Q, tf)
     spos = 0 #random.randint(0, len(START)-1)
     best = float('-inf')
     for i in xrange(ITERS):
-        state = EmptyS(spos, START)
-        #state = (0, START)
+        #state = EmptyS(spos, START)
+        state = (0, START)
         cur_eps = max(MIN_EPSILON, EPSILON - i*DECAY / (float(ITERS)))
         #cur_eps = EPSILON
-        if i and i % 1000 == 0:
+        if i and i % 100 == 0:
             print 'Iteration', i
             print 'current epsilon', cur_eps
-            print "States:", len(Q)
-            print "State 0:", Q[state]
+            #print "States:", len(Q)
+            print "State 0:", Q.predict(state)
 
             rem = 0
             cum_rew = 0
@@ -270,17 +293,20 @@ def main():
                 else:
                     action, score = 'submit', -100
 
+                #print _state, action
+
                 cum_rew += uf.evaluate(_state, action)
 
                 h.append((rem, _state, action, score, cum_rew))
+                print h[-1]
                 _state = tf.evaluate(_state, action)
                 rem += 1
 
             print "Current Reward:", cum_rew
             print "Current History:", len(h)
 
-            #if _state[1] == WORLD:
-            if _state.w == WORLD and cum_rew > best:
+            if _state[1] == WORLD and cum_rew > best:
+            #if _state.w == WORLD and cum_rew > best:
                 for a,b,c,d,e in h:
                     print a, b, c, d, e
 
@@ -317,29 +343,31 @@ def main():
         #history.append((state, action, reward))
 
         # Alright, run through the background
-        history = list(reversed(history))
-        #if i % 1000 == 0:
-        #    print "next"
-        #    print "History:", len(history)
+        #history = list(reversed(history))
+        #for si, (state, action, reward) in enumerate(history):
 
-        #if i % 1000 == 0:
-        #    print
-        #    print
+        #    if state not in Q:
+        #        N = len(tf.action_set(state))
+        #        Q[state] = np.zeros((N,), 'float32')
 
-        for si, (state, action, reward) in enumerate(history):
+        #    if si == 0:
+        #        v = GAMMA * reward
+        #    else:
+        #        v = reward + GAMMA * Q[history[si-1][0]].max()
 
-            if state not in Q:
-                N = len(tf.action_set(state))
-                Q[state] = np.zeros((N,), 'float32')
+        #    a_idx = tf.action_to_index(state, action)
+        #    Q[state][a_idx] = v
 
-            if si == 0:
-                v = GAMMA * reward
-            else:
-                v = reward + GAMMA * Q[history[si-1][0]].max()
-
+        state_prime = None
+        for si, (state, action, reward) in enumerate(reversed(history)):
             a_idx = tf.action_to_index(state, action)
-            Q[state][a_idx] = v
+            if i % 100 == 0:
+                print state, action, reward, state_prime 
 
+            Q.add(state, a_idx, reward, state_prime)
+            state_prime = state
+
+        Q.learn()
 
 if __name__ == '__main__':
     main()
